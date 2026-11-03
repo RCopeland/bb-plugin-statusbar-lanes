@@ -98,6 +98,50 @@ export function percent(value: number | null): string {
 }
 
 /**
+ * `$44.84` — the remaining balance, scraped from lanes' detail sentence.
+ *
+ * WHY THIS PARSES PROSE, WHICH NOTHING ELSE HERE DOES
+ *
+ * For a metered lane, the only number worth showing is money, and lanes does
+ * not publish it as a field: its window payload is `{label, usedPercent,
+ * resetsAt}` and the dollar figure exists only inside `detail`, as
+ * `"$44.84 of $65.00 left — no auto-reload"`. lanes is an upstream plugin we do
+ * not own, so the field cannot be added at the source.
+ *
+ * The alternative - fetching OpenRouter here - is forbidden by this plugin's
+ * design and asserted against in CI: it would duplicate lanes' credential
+ * handling, including the file-versus-process-environment ordering rule that
+ * lanes got wrong once already. Republishing is this plugin's whole job, so the
+ * parse is the cheaper of two bad options.
+ *
+ * WHY IT MATCHES `of $` AND NOT JUST THE FIRST `$`
+ *
+ * The sentence contains two dollar figures and only the first is the balance.
+ * The `of $` anchor is what distinguishes `$44.84 of $65.00 left` (remaining of
+ * total, what we want) from an inverted rewrite like `$65.00 total, $44.84
+ * left` (where the first figure is the lifetime sum, not the balance). It is
+ * anchored to the one wording lanes generates today rather than to a guess.
+ *
+ * COUPLING: this depends on lanes' detail wording for metered lanes. If that
+ * sentence is reworded the parse stops matching and callers fall back to the
+ * percentage - a worse number, but never a wrong one.
+ */
+export function balanceFromDetail(detail: string | null): string | null {
+  if (detail === null) return null;
+  const match = /\$([\d,]+(?:\.\d+)?)\s+of\s+\$/i.exec(detail);
+  if (match === null) return null;
+  const amount = Number(match[1]!.replace(/,/g, ""));
+  if (!Number.isFinite(amount)) return null;
+  // Re-add the separator stripped above. Balances grow in $50 chunks, so a
+  // comma is plausible rather than theoretical, and `$1234.50` is harder to
+  // read at a glance than `$1,234.50`.
+  return `$${amount.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/**
  * `↻4h` / `↻2d` / `↻12m` — when a refilling quota comes back.
  *
  * Returns null for a metered balance, which is signalled by `resetsAt` being
@@ -156,10 +200,24 @@ export function laneMetric(lane: LanesLane): SectionMetricInput {
   const used = worst === null ? null : Number(worst.usedPercent ?? 0);
   const reset = worst === null ? null : resetLabel(worst.resetsAt);
 
+  // A metered lane's percentage is `spent / lifetime-purchased`, which is a
+  // purchase ratio rather than a burn rate: it barely moves and resets never.
+  // The balance is the number the user actually asked for, so it wins when
+  // lanes' detail sentence yields one. A refilling quota has no such sentence
+  // and keeps its percentage untouched.
+  const balance = balanceFromDetail(lane.detail);
+
   return {
     label: shortLaneName(lane),
-    value: `${percent(used)}${reset === null ? "" : ` ↻${reset}`}`,
-    tone: toneForPercent(used),
+    value:
+      balance !== null
+        ? `${balance}${reset === null ? "" : ` ↻${reset}`}`
+        : `${percent(used)}${reset === null ? "" : ` ↻${reset}`}`,
+    // A metered lane is never toned by its consumed percentage: a balance
+    // shows headroom, where a high number is GOOD news, so the percentage's
+    // 75/90 thresholds would flag a healthy balance as alarming. Neutral is
+    // honest here; dollar-balance thresholds are deliberately not invented.
+    tone: balance !== null ? "neutral" : toneForPercent(used),
     // Prefer the plugin's own detail (it knows the money figure and whether the
     // balance auto-reloads); fall back to naming the window being shown.
     detail: lane.detail ?? (worst === null ? null : String(worst.label ?? "window")),

@@ -4,14 +4,22 @@ A [Statusbar](https://github.com/RCopeland/bb-plugin-statusbar) section provider
 that shows model lane headroom in the bar:
 
 ```
-$0.03 today │ OpenRouter 27% │ CPU 34% MEM 51% DISK 9% │ 14:32 Mon 13 Oct
-MTD $6.27 · $47.27 of $65.00 left — no auto-reload
+$0.03 today │ OpenRouter $44.84 │ CPU 34% MEM 51% DISK 9% │ 14:32 Mon 13 Oct
+MTD $6.27 · $44.84 of $65.00 left — no auto-reload
 ```
 
-One metric per lane, showing the **worst** window for that lane — whichever
-quota is closest to running out. Refilling quotas carry a reset countdown
-(`↻4h`); a metered balance does not, because a pay-as-you-go balance does not
-refill on its own and a countdown on it would be a lie.
+One metric per lane. A **metered** lane (OpenRouter) shows its remaining balance
+in dollars; a **subscription** lane (Claude Code, Codex) shows the **worst**
+window's percentage — whichever quota is closest to running out. Refilling
+quotas carry a reset countdown (`↻4h`); a metered balance does not, because a
+pay-as-you-go balance does not refill on its own and a countdown on it would be
+a lie.
+
+**Why a metered lane shows dollars and not a percentage.** lanes reports a
+metered lane's `usedPercent` as `spent / lifetime-purchased`, which is a
+*purchase* ratio rather than a burn rate: it barely moves between polls and never
+resets, so as a headline number it is close to a constant. The balance is the
+figure that carries information, so it wins where it is available.
 
 ## What it is, and what it is not
 
@@ -121,6 +129,26 @@ plugin is one RPC call plus formatting.
 weekly one). The bar has room for one number per lane, and the useful one is the
 binding constraint — whichever quota is closest to running out — not the first
 or the average.
+
+**The balance is scraped from lanes' detail sentence.** lanes does not publish a
+metered lane's dollar amount as a field — its window payload is `{label,
+usedPercent, resetsAt}` — so the only place it exists is prose, as `"$44.84 of
+$65.00 left — no auto-reload"`. This plugin parses that sentence, because the
+alternatives are worse: adding the field means altering an upstream plugin,
+and fetching OpenRouter directly means duplicating the credential handling the
+split exists to avoid (and CI forbids it).
+
+That parse is therefore **coupled to lanes' wording**, and it is the only place
+in this plugin that reads content out of another plugin's prose rather than
+republishing fields. If the sentence is reworded the match fails and the metric
+degrades to the percentage — a less useful number, but never a wrong one. The
+match is anchored on `of $` rather than the first `$` so an inverted rewrite can
+never surface the lifetime purchase total as the balance.
+
+**A metered lane is never toned by its percentage.** The bar's 75%/90%
+thresholds mean "bad news", but a balance shows *headroom*, where a high number
+is good — applying them would paint a healthy balance as alarming. Metered lanes
+are toned neutral rather than having dollar thresholds invented for them.
 
 **Stale data is labelled.** lanes polls every 3 minutes, so a reading can go
 stale quietly if the plugin is stopped: the number on screen would be old rather
